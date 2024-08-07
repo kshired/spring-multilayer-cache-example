@@ -6,12 +6,14 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
 import com.github.benmanes.caffeine.cache.Caffeine
+import io.kshired.multilayer.cache.example.cache.MultiLayerCache
 import io.kshired.multilayer.cache.example.cache.layer.CacheInfo
 import io.kshired.multilayer.cache.example.cache.layer.LocalLayer
 import io.kshired.multilayer.cache.example.cache.layer.MultiLayer
 import io.kshired.multilayer.cache.example.cache.layer.RedisLayer
 import io.kshired.multilayer.cache.example.cache.manager.MultiLayerCacheManager
 import org.springframework.beans.factory.annotation.Value
+import org.springframework.boot.actuate.metrics.cache.CacheMeterBinderProvider
 import org.springframework.cache.CacheManager
 import org.springframework.cache.annotation.EnableCaching
 import org.springframework.cache.caffeine.CaffeineCache
@@ -26,7 +28,6 @@ import org.springframework.data.redis.connection.RedisConnectionFactory
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer
 import org.springframework.data.redis.serializer.RedisSerializationContext
 import org.springframework.data.redis.serializer.StringRedisSerializer
-import java.time.Duration
 
 @EnableCaching
 @Configuration
@@ -57,12 +58,21 @@ class CacheConfig(
     @Bean(name = [CacheConstants.MULTI_LAYER_CACHE_MANAGER])
     fun multiLayerCacheManager(): CacheManager {
         return MultiLayerCacheManager(
-            localLayerCacheManager(MultiLayer.entries.map { it.toLocalCacheInfo() }),
-            redisLayerCacheManager(MultiLayer.entries.map { it.toRedisCacheInfo() })
+            listOf(
+                localLayerCacheManager(MultiLayer.entries.map { it.toLocalCacheInfo() }),
+                redisLayerCacheManager(MultiLayer.entries.map { it.toRedisCacheInfo() }),
+            )
         )
     }
 
-    private fun redisLayerCacheManager(redisCacheInfos: List<CacheInfo.RedisCacheInfo>): CacheManager {
+    @Bean
+    fun multiLayerCacheMeterBinderProvider(): CacheMeterBinderProvider<MultiLayerCache> {
+        return CacheMeterBinderProvider<MultiLayerCache> { cache, _ ->
+            cache.getMeterBinder()
+        }
+    }
+
+    private fun redisLayerCacheManager(redisCacheInfos: List<CacheInfo.RedisCacheInfo>): RedisCacheManager {
         val objectMapper = jacksonObjectMapper()
             .registerKotlinModule()
             .registerModule(JavaTimeModule())
@@ -89,10 +99,11 @@ class CacheConfig(
             .fromConnectionFactory(redisConnectionFactory)
             .withInitialCacheConfigurations(redisCacheConfigurationMap)
             .disableCreateOnMissingCache()
+            .enableStatistics()
             .build()
     }
 
-    private fun localLayerCacheManager(localCacheInfos: List<CacheInfo.LocalCacheInfo>): CacheManager {
+    private fun localLayerCacheManager(localCacheInfos: List<CacheInfo.LocalCacheInfo>): SimpleCacheManager {
         val cacheManger = SimpleCacheManager()
         cacheManger.setCaches(
             localCacheInfos.map {
@@ -101,6 +112,7 @@ class CacheConfig(
                     Caffeine.newBuilder()
                         .maximumSize(it.maxCacheItem)
                         .expireAfterWrite(it.ttl)
+                        .recordStats()
                         .build()
                 )
             }
